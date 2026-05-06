@@ -11,8 +11,8 @@ function log() {
     echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [controller] [${level}] ${msg}"
 }
 
-if ((TOR_INSTANCES < 1 || TOR_INSTANCES > 40)); then
-    log "fatal" "TOR_INSTANCES must be 1-40"
+if ((TOR_INSTANCES < 1 || TOR_INSTANCES > 200)); then
+    log "fatal" "TOR_INSTANCES must be 1-200"
     exit 1
 fi
 

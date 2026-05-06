@@ -210,8 +210,8 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	n, err := strconv.Atoi(getenv("TOR_INSTANCES", "5"))
-	if err != nil || n < 1 || n > 40 {
-		log.Fatalf("TOR_INSTANCES must be 1-40")
+	if err != nil || n < 1 || n > 200 {
+		log.Fatalf("TOR_INSTANCES must be 1-200")
 	}
 	numInstances = n
 
