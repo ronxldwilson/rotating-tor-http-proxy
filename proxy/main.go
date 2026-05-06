@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const baseSocksPort = 10000
+const socksAddr = "127.0.0.1:10000"
 
 var (
 	numInstances int
@@ -23,8 +23,10 @@ var (
 	statErrors   atomic.Uint64
 )
 
-// dialSOCKS5 opens a TCP connection through a SOCKS5 proxy (no auth) to targetAddr ("host:port").
-func dialSOCKS5(socksAddr, targetAddr string) (net.Conn, error) {
+// dialSOCKS5 opens a connection through a SOCKS5 proxy to targetAddr ("host:port").
+// If username is non-empty, SOCKS5 username/password auth is performed — Tor uses
+// this to isolate circuits per credential (IsolateSOCKSAuth).
+func dialSOCKS5(proxyAddr, targetAddr, username, password string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(targetAddr)
 	if err != nil {
 		return nil, fmt.Errorf("bad target addr: %w", err)
@@ -34,24 +36,47 @@ func dialSOCKS5(socksAddr, targetAddr string) (net.Conn, error) {
 		return nil, fmt.Errorf("bad port: %w", err)
 	}
 
-	conn, err := net.DialTimeout("tcp", socksAddr, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", proxyAddr, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
 
-	// greeting
-	if _, err = conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+	// greeting — offer no-auth (0x00) and user/pass (0x02)
+	if _, err = conn.Write([]byte{0x05, 0x02, 0x00, 0x02}); err != nil {
 		conn.Close()
 		return nil, err
 	}
-	buf := make([]byte, 2)
-	if _, err = io.ReadFull(conn, buf); err != nil {
+	method := make([]byte, 2)
+	if _, err = io.ReadFull(conn, method); err != nil {
 		conn.Close()
 		return nil, err
 	}
-	if buf[0] != 0x05 || buf[1] != 0x00 {
+
+	switch method[1] {
+	case 0x02:
+		// username/password sub-negotiation (RFC 1929)
+		auth := []byte{0x01, byte(len(username))}
+		auth = append(auth, []byte(username)...)
+		auth = append(auth, byte(len(password)))
+		auth = append(auth, []byte(password)...)
+		if _, err = conn.Write(auth); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		resp := make([]byte, 2)
+		if _, err = io.ReadFull(conn, resp); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		if resp[1] != 0x00 {
+			conn.Close()
+			return nil, fmt.Errorf("SOCKS5 auth rejected")
+		}
+	case 0x00:
+		// no auth accepted — fine
+	default:
 		conn.Close()
-		return nil, fmt.Errorf("SOCKS5 handshake rejected: % x", buf)
+		return nil, fmt.Errorf("SOCKS5 no acceptable method: %x", method[1])
 	}
 
 	// CONNECT with domain name
@@ -98,8 +123,9 @@ func dialViaTor(_ context.Context, _, addr string) (net.Conn, error) {
 	var lastErr error
 	for i := 0; i < tried; i++ {
 		idx := int(reqCounter.Add(1)-1) % numInstances
-		socks := fmt.Sprintf("127.0.0.1:%d", baseSocksPort+idx)
-		conn, err := dialSOCKS5(socks, addr)
+		// each credential maps to an isolated Tor circuit via IsolateSOCKSAuth
+		user := fmt.Sprintf("i%d", idx)
+		conn, err := dialSOCKS5(socksAddr, addr, user, "x")
 		if err == nil {
 			return conn, nil
 		}
@@ -201,7 +227,7 @@ func main() {
 		}))
 	}()
 
-	log.Printf("[proxy] %d Tor instances, listening on :3128", numInstances)
+	log.Printf("[proxy] %d virtual instances on :3128 via single Tor process", numInstances)
 	srv := &http.Server{
 		Addr: ":3128",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
