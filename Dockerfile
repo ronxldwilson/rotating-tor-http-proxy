@@ -34,6 +34,9 @@ RUN apk --no-cache --no-progress --quiet upgrade && \
 
 STOPSIGNAL SIGINT
 
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=30s \
+    CMD curl -sf --proxy http://localhost:3128 http://httpbin.org/ip || exit 1
+
 USER proxy
 
 CMD ["/start.sh"]
